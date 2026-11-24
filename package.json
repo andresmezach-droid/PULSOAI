@@ -1,0 +1,21 @@
+{
+  "name": "pulso-ai-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PULSO AI - SaaS Multi-Tenant de automatización de WhatsApp con IA y Mini-CRM para clínicas en Venezuela",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=@pulso-ai/api",
+    "build:api": "npm run build --workspace=@pulso-ai/api",
+    "start:api": "npm run start --workspace=@pulso-ai/api",
+    "dev:web": "npm run dev --workspace=@pulso-ai/web",
+    "build:web": "npm run build --workspace=@pulso-ai/web",
+    "build": "npm run build --workspace=@pulso-ai/api && npm run build --workspace=@pulso-ai/web",
+    "typecheck": "npm run typecheck --workspace=@pulso-ai/api && npm run typecheck --workspace=@pulso-ai/web"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

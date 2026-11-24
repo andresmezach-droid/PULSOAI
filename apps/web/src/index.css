@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #F8FAFC;
+    color: #0F172A;
+    font-style: normal;
+  }
+
+  /* Regla de identidad visual PULSO AI: sin cursivas */
+  em, i {
+    font-style: normal;
+  }
+}

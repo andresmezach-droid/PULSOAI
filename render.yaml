@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: pulso-ai-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: META_API_VERSION
+        value: v21.0
+      - key: META_VERIFY_TOKEN
+        value: pulso_ai_verify_secret_token_2025
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_SYSTEM_ACCESS_TOKEN
+        sync: false
+      - key: BCV_API_URL
+        value: https://ve.dolarapi.com/v1/dolares/oficial
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: VITE_APP_URL
+        value: http://localhost:5173
