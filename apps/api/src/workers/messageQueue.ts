@@ -44,14 +44,22 @@ export async function enqueueConversationDebounce(
   clinicId: string,
   conversationId: string
 ): Promise<void> {
-  const jobId = `debounce:${conversationId}`;
+  // BullMQ v5 prohíbe el carácter ':' en custom jobId
+  const jobId = `debounce-${conversationId}`;
 
   const existingJob = await incomingMessagesQueue.getJob(jobId);
   if (existingJob) {
     const state = await existingJob.getState();
-    // Si el job está esperando o en delay, lo removemos para reiniciar el contador de 6s
-    if (state === 'delayed' || state === 'waiting' || state === 'waiting-children') {
-      await existingJob.remove();
+    // Si el job está en delay, esperando, completado o fallido, lo removemos
+    // para que BullMQ permita crear el nuevo job con el mismo jobId y delay de 6s.
+    if (
+      state === 'delayed' ||
+      state === 'waiting' ||
+      state === 'waiting-children' ||
+      state === 'completed' ||
+      state === 'failed'
+    ) {
+      await existingJob.remove().catch(() => undefined);
     }
   }
 
@@ -65,6 +73,8 @@ export async function enqueueConversationDebounce(
     {
       jobId,
       delay: DEBOUNCE_DELAY_MS,
+      removeOnComplete: true,
+      removeOnFail: true,
     }
   );
 }
