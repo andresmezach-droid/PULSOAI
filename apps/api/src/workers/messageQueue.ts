@@ -5,7 +5,7 @@ import { processConversation } from '../services/aiAgent';
 import { ConversationRow, MessageRow } from '../types/database';
 
 export const INCOMING_MESSAGES_QUEUE_NAME = 'incoming-messages';
-const DEBOUNCE_DELAY_MS = 6000; // 6 segundos
+const DEBOUNCE_DELAY_MS = Number(process.env['DEBOUNCE_DELAY_MS'] ?? 2000); // 2 segundos para respuesta ultrarrápida
 
 export interface ConversationDebounceJobData {
   clinicId: string;

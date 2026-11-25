@@ -26,11 +26,11 @@ import {
 } from './calendar';
 import { downloadWhatsAppMedia, sendWhatsAppText } from './whatsapp';
 
-const GEMINI_MODEL = process.env['GEMINI_MODEL'] || 'gemini-3.5-flash';
+const GEMINI_MODEL = process.env['GEMINI_MODEL'] || 'gemini-3.5-flash-lite';
 const GEMINI_FALLBACK_MODELS = [
   GEMINI_MODEL,
-  'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
 ];
 const MAX_TOOL_ITERATIONS = 5;
 
@@ -222,8 +222,14 @@ function buildDynamicSystemPrompt(params: {
   clinic: ClinicRow;
   patient: PatientRow;
   bcvRate: number;
+  services: Array<
+    Pick<
+      ServiceRow,
+      'id' | 'name' | 'description' | 'category' | 'price_usd' | 'duration_minutes'
+    >
+  >;
 }): string {
-  const { clinic, patient, bcvRate } = params;
+  const { clinic, patient, bcvRate, services } = params;
   const currentDateTime = getCaracasCurrentDateTimeString(
     clinic.timezone || 'America/Caracas'
   );
@@ -235,6 +241,17 @@ function buildDynamicSystemPrompt(params: {
   const businessHoursStr = clinic.business_hours
     ? JSON.stringify(clinic.business_hours)
     : 'Lunes a Viernes 08:00 a 17:00, Sábados 09:00 a 13:00';
+
+  const servicesCatalogStr =
+    services.length > 0
+      ? services
+          .map((s) => {
+            const usd = Number(s.price_usd);
+            const ves = (usd * bcvRate).toFixed(2);
+            return `- ${s.name} (serviceId: "${s.id}" | Duración: ${s.duration_minutes} min): $${usd.toFixed(2)} USD (Bs. ${ves} a tasa BCV)${s.description ? ` — ${s.description}` : ''}`;
+          })
+          .join('\n')
+      : 'Sin servicios activos registrados.';
 
   const extraInstructions = [clinic.ai_system_prompt, clinic.system_prompt_extra]
     .filter((s): s is string => Boolean(s && s.trim().length > 0))
@@ -250,11 +267,14 @@ function buildDynamicSystemPrompt(params: {
 - **Horarios de atención (business_hours):** ${businessHoursStr}
 - **Paciente actual:** ${patient.full_name ?? 'Aún no ha indicado su nombre'} (Teléfono WhatsApp: ${patient.phone})
 
+### CATÁLOGO OFICIAL DE SERVICIOS Y PRECIOS ACTIVOS (YA PRE-CARGADOS)
+${servicesCatalogStr}
+
 ### REGLAS OBLIGATORIAS E INQUEBRANTABLES
 1. **Tono y longitud:** Mantén un tono cálido, empático, profesional venezolano y muy breve (MÁXIMO 3 a 4 líneas por mensaje). Usa formato claro para WhatsApp.
-2. **Prohibido inventar precios o servicios:** NUNCA inventes precios, tratamientos ni promociones. Siempre invoca primero la herramienta \`get_clinic_services\` para consultar los servicios activos y sus precios reales.
+2. **Precios y servicios:** Usa ÚNICAMENTE el catálogo oficial pre-cargado arriba (no necesitas llamar a \`get_clinic_services\` a menos que requieras refrescarlo). NUNCA inventes precios ni tratamientos que no estén en la lista.
 3. **Conversión a Bolívares (Tasa BCV):** Cuando el paciente pregunte precios en Bolívares (Bs.), Pago Móvil o transferencia nacional, informa el monto en USD y su equivalente exacto en Bolívares calculado a la tasa oficial del BCV (Bs. ${bcvRate.toFixed(2)}/USD).
-4. **Prohibido inventar disponibilidad:** NUNCA confirmes ni propongas horas específicas sin antes ejecutar \`check_availability\` para la fecha solicitada. Para agendar usa \`book_appointment\`. Si el paciente desea **reprogramar o cancelar** una cita existente, primero usa \`get_patient_appointments\` para ubicar su cita activa y luego ejecuta \`reschedule_or_cancel\`.
+4. **Prohibido inventar disponibilidad:** NUNCA confirmes ni propongas horas específicas sin antes ejecutar \`check_availability\` para la fecha solicitada. Para agendar usa \`book_appointment\` pasando el \`serviceId\` exacto del catálogo. Si el paciente desea **reprogramar o cancelar** una cita existente, primero usa \`get_patient_appointments\` para ubicar su cita activa y luego ejecuta \`reschedule_or_cancel\`.
 5. **Notas de voz e imágenes:** Entiendes notas de voz e imágenes nativamente. Si el paciente envía una nota de voz, respóndele con total naturalidad.
 6. **Prohibido diagnosticar o atender emergencias médicas:** NO des diagnósticos clínicos ni recetes medicamentos. Si el paciente reporta una emergencia médica (dolor agudo o severo, sangrado, infección, inflamación grave) o pide hablar con un humano/doctor, ejecuta DE INMEDIATO la herramienta \`escalate_to_human\` e infórmale con empatía que un especialista o recepcionista lo atenderá en breve.
 
@@ -677,7 +697,7 @@ export async function processConversation(
   clinicId: string,
   conversationId: string
 ): Promise<void> {
-  const [convRes, clinicRes, messagesRes, bcvRes] = await Promise.all([
+  const [convRes, clinicRes, messagesRes, servicesRes, bcvRes] = await Promise.all([
     supabaseAdmin
       .from('conversations')
       .select(
@@ -709,8 +729,22 @@ export async function processConversation(
       .eq('clinic_id', clinicId)
       .eq('conversation_id', conversationId)
       .order('created_at', { ascending: false })
-      .limit(15)
+      .limit(12)
       .returns<MessageRow[]>(),
+    supabaseAdmin
+      .from('services')
+      .select('id, name, description, category, price_usd, duration_minutes')
+      .eq('clinic_id', clinicId)
+      .eq('is_active', true)
+      .order('name', { ascending: true })
+      .returns<
+        Array<
+          Pick<
+            ServiceRow,
+            'id' | 'name' | 'description' | 'category' | 'price_usd' | 'duration_minutes'
+          >
+        >
+      >(),
     getBcvRate().catch(() => ({
       rate: 1,
       updatedAt: new Date().toISOString(),
@@ -823,15 +857,19 @@ export async function processConversation(
       clinic,
       patient,
       bcvRate: bcvRes.rate,
+      services: servicesRes.data ?? [],
     });
 
-    // Bucle seguro de Function Calling (máximo 5 iteraciones)
+    // Bucle seguro de Function Calling (máximo 5 iteraciones) con thinkingBudget: 0 para mínima latencia
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const response = await generateContentWithFallback({
         contents,
         config: {
           systemInstruction,
-          temperature: 0.25,
+          temperature: 0.2,
+          thinkingConfig: {
+            thinkingBudget: 0,
+          },
           tools: [{ functionDeclarations: pulsoToolDeclarations }],
         },
       });

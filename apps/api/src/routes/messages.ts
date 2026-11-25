@@ -342,14 +342,6 @@ messagesRouter.patch(
       return;
     }
 
-    // Si se acaba de reactivar la IA y hay mensajes del paciente sin procesar, disparamos el debounce
-    if (aiEnabled) {
-      const { enqueueConversationDebounce } = await import(
-        '../workers/messageQueue'
-      );
-      await enqueueConversationDebounce(clinicId, conversationId);
-    }
-
     res.status(200).json({
       conversation: updatedConversation,
     });
