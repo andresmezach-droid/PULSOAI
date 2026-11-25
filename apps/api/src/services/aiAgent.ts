@@ -26,12 +26,41 @@ import {
 } from './calendar';
 import { downloadWhatsAppMedia, sendWhatsAppText } from './whatsapp';
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_MODEL = process.env['GEMINI_MODEL'] || 'gemini-3.5-flash';
+const GEMINI_FALLBACK_MODELS = [
+  GEMINI_MODEL,
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+];
 const MAX_TOOL_ITERATIONS = 5;
 
 const genAI = new GoogleGenAI({
   apiKey: env.GEMINI_API_KEY,
 });
+
+/**
+ * Invoca Gemini con fallback automático de modelo si hay saturación temporal (HTTP 503/429)
+ */
+async function generateContentWithFallback(
+  params: Omit<Parameters<typeof genAI.models.generateContent>[0], 'model'>
+) {
+  let lastError: unknown;
+  for (const candidateModel of GEMINI_FALLBACK_MODELS) {
+    try {
+      return await genAI.models.generateContent({
+        ...params,
+        model: candidateModel,
+      });
+    } catch (err) {
+      lastError = err;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[AIAgent] Modelo ${candidateModel} devolvió error (${errMsg}). Intentando modelo de respaldo...`
+      );
+    }
+  }
+  throw lastError;
+}
 
 // Esquemas Zod para validar los argumentos de Function Calling
 const checkAvailabilityArgsSchema = z.object({
@@ -455,8 +484,7 @@ async function processIncomingAudioMessage(params: {
     };
 
     // Generar transcripción/resumen conciso para almacenar en messages.media_transcript
-    const transcriptRes = await genAI.models.generateContent({
-      model: GEMINI_MODEL,
+    const transcriptRes = await generateContentWithFallback({
       contents: [
         {
           role: 'user',
@@ -533,8 +561,7 @@ async function processIncomingImageMessage(params: {
       },
     };
 
-    const analysisRes = await genAI.models.generateContent({
-      model: GEMINI_MODEL,
+    const analysisRes = await generateContentWithFallback({
       contents: [
         {
           role: 'user',
@@ -800,8 +827,7 @@ export async function processConversation(
 
     // Bucle seguro de Function Calling (máximo 5 iteraciones)
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      const response = await genAI.models.generateContent({
-        model: GEMINI_MODEL,
+      const response = await generateContentWithFallback({
         contents,
         config: {
           systemInstruction,
