@@ -5,7 +5,7 @@
   "description": "Backend API & Workers para PULSO AI",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx --use-system-ca watch src/index.ts",
+    "dev": "tsx watch --use-system-ca src/index.ts",
     "build": "tsc",
     "start": "node --use-system-ca dist/index.js",
     "typecheck": "tsc --noEmit"
