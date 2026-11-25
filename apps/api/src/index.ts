@@ -24,13 +24,20 @@ import {
 
 const app = express();
 
-// Seguridad HTTP (Helmet) y CORS habilitando el origen del Dashboard (apps/web)
+// Seguridad HTTP (Helmet) y CORS habilitando el origen del Dashboard (local y Cloudflare Pages/Workers)
 const allowedOrigin = process.env['VITE_APP_URL'] || 'http://localhost:5173';
 
 app.use(helmet());
 app.use(
   cors({
-    origin: [allowedOrigin, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: [
+      allowedOrigin,
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'https://pulsoai.andresmezach.workers.dev',
+      /\.workers\.dev$/,
+      /\.pages\.dev$/,
+    ],
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Clinic-Id'],

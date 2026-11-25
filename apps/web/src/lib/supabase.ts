@@ -1,17 +1,17 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const DEFAULT_SUPABASE_URL = 'https://irtawkxxqxmedihyhcim.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY =
+  'sb_publishable_ozNt4Dc5fom0l704OFiqrA_0G3XoH6r';
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn(
-    '[PULSO AI Web] Faltan VITE_SUPABASE_URL o VITE_SUPABASE_ANON_KEY en el archivo .env de apps/web.'
-  );
-}
+const supabaseUrl =
+  import.meta.env.VITE_SUPABASE_URL?.trim() || DEFAULT_SUPABASE_URL;
+const supabaseAnonKey =
+  import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || DEFAULT_SUPABASE_ANON_KEY;
 
 export const supabase: SupabaseClient = createClient(
-  supabaseUrl || 'https://placeholder.supabase.co',
-  supabaseAnonKey || 'placeholder-anon-key',
+  supabaseUrl,
+  supabaseAnonKey,
   {
     auth: {
       persistSession: true,
