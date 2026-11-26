@@ -300,6 +300,52 @@ export async function checkAvailability(
   return availableSlots;
 }
 
+export interface MultiDayAvailabilitySlot {
+  date: string;
+  dayNameEs: string;
+  availableSlots: string[];
+}
+
+/**
+ * Consulta la disponibilidad de los próximos `daysCount` días (ej. próximos 3 días hábiles) en una sola llamada
+ * para responder rápido cuando el paciente pregunta "¿qué días u horarios tienen disponibles?".
+ */
+export async function checkNextDaysAvailability(
+  clinicId: string,
+  startDateYmd: string,
+  durationMinutes: number,
+  daysCount = 3
+): Promise<MultiDayAvailabilitySlot[]> {
+  const results: MultiDayAvailabilitySlot[] = [];
+  const baseDate = /^\d{4}-\d{2}-\d{2}$/.test(startDateYmd)
+    ? new Date(`${startDateYmd}T12:00:00-04:00`)
+    : new Date();
+
+  const dayFormatter = new Intl.DateTimeFormat('es-VE', {
+    timeZone: 'America/Caracas',
+    weekday: 'long',
+    day: '2-digit',
+    month: 'short',
+  });
+
+  for (let offset = 0; offset < 6 && results.length < daysCount; offset++) {
+    const targetDate = new Date(baseDate.getTime() + offset * 24 * 60 * 60 * 1000);
+    const caracasMs = targetDate.getTime() - 4 * 60 * 60 * 1000;
+    const ymd = new Date(caracasMs).toISOString().slice(0, 10);
+
+    const slots = await checkAvailability(clinicId, ymd, durationMinutes);
+    if (slots.length > 0) {
+      results.push({
+        date: ymd,
+        dayNameEs: dayFormatter.format(targetDate),
+        availableSlots: slots,
+      });
+    }
+  }
+
+  return results;
+}
+
 export interface BookAppointmentResult {
   appointmentId: string;
   googleEventId: string | null;

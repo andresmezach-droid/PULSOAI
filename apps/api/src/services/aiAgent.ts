@@ -21,25 +21,27 @@ import { getBcvRate } from './bcv';
 import {
   bookAppointment,
   checkAvailability,
+  checkNextDaysAvailability,
   getPatientActiveAppointments,
   rescheduleOrCancelAppointment,
 } from './calendar';
 import { downloadWhatsAppMedia, sendWhatsAppText } from './whatsapp';
 
-const GEMINI_MODEL = process.env['GEMINI_MODEL'] || 'gemini-3.5-flash';
+const GEMINI_MODEL = process.env['GEMINI_MODEL'] || 'gemini-3.1-flash-lite';
 const GEMINI_FALLBACK_MODELS = [
   GEMINI_MODEL,
   'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
 ];
 const MAX_TOOL_ITERATIONS = 5;
+const GEMINI_CALL_TIMEOUT_MS = 10000; // 10 segundos máximo por llamada a Gemini
 
 const genAI = new GoogleGenAI({
   apiKey: env.GEMINI_API_KEY,
 });
 
 /**
- * Invoca Gemini con fallback automático de modelo si hay saturación temporal (HTTP 503/429)
+ * Invoca Gemini con timeout de 10s y fallback automático de modelo si un modelo tarda o da 503/429
  */
 async function generateContentWithFallback(
   params: Omit<Parameters<typeof genAI.models.generateContent>[0], 'model'>
@@ -47,15 +49,30 @@ async function generateContentWithFallback(
   let lastError: unknown;
   for (const candidateModel of GEMINI_FALLBACK_MODELS) {
     try {
-      return await genAI.models.generateContent({
-        ...params,
-        model: candidateModel,
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Timeout (${GEMINI_CALL_TIMEOUT_MS}ms) esperando respuesta de ${candidateModel}`
+              )
+            ),
+          GEMINI_CALL_TIMEOUT_MS
+        );
       });
+
+      return await Promise.race([
+        genAI.models.generateContent({
+          ...params,
+          model: candidateModel,
+        }),
+        timeoutPromise,
+      ]);
     } catch (err) {
       lastError = err;
       const errMsg = err instanceof Error ? err.message : String(err);
       console.warn(
-        `[AIAgent] Modelo ${candidateModel} devolvió error (${errMsg}). Intentando modelo de respaldo...`
+        `[AIAgent] Modelo ${candidateModel} falló o excedió tiempo (${errMsg}). Intentando modelo de respaldo...`
       );
     }
   }
@@ -274,11 +291,11 @@ ${servicesCatalogStr}
 1. **Tono y longitud:** Mantén un tono cálido, empático, profesional venezolano y muy breve (MÁXIMO 3 a 4 líneas por mensaje). Usa formato claro para WhatsApp.
 2. **Precios y servicios:** Usa ÚNICAMENTE el catálogo oficial pre-cargado arriba (no necesitas llamar a \`get_clinic_services\` a menos que requieras refrescarlo). NUNCA inventes precios ni tratamientos que no estén en la lista.
 3. **Conversión a Bolívares (Tasa BCV):** Cuando el paciente pregunte precios en Bolívares (Bs.), Pago Móvil o transferencia nacional, informa el monto en USD y su equivalente exacto en Bolívares calculado a la tasa oficial del BCV (Bs. ${bcvRate.toFixed(2)}/USD).
-4. **Flujo obligatorio de 3 pasos para agendar citas (PROHIBIDO SALTARSE PASOS):**
-   - **Paso A:** Si el paciente solo dice el nombre de un tratamiento (ej. "limpieza", "blanqueamiento"), dale su precio en USD y Bs. BCV y **pregúntale para qué día desea agendar**. NUNCA reutilices fechas ni horas de citas viejas ya agendadas en días anteriores.
-   - **Paso B:** Cuando el paciente indique el día que desea (ej. "mañana", "el viernes"), ejecuta obligatoriamente \`check_availability\` para esa fecha y muéstrale los horarios libres para que elija uno.
-   - **Paso C:** ÚNICAMENTE después de que el paciente confirme explícitamente la hora que prefiere de la lista disponible (y tengas su nombre), ejecuta \`book_appointment\`. Si aún no ha elegido fecha y hora en esta solicitud nueva, está ESTRICTAMENTE PROHIBIDO llamar a \`book_appointment\`.
-   - Si el paciente desea **reprogramar o cancelar** una cita existente, primero usa \`get_patient_appointments\` para ubicar su cita activa y luego ejecuta \`reschedule_or_cancel\`.
+4. **Flujo natural y conversacional para agendar citas (SIN REPETIR PREGUNTAS):**
+   - **No repitas precios si ya los diste:** Si en el mensaje anterior ya mostraste la lista de servicios con precios y el paciente responde eligiendo uno (ej. "limpieza"), NO vuelvas a repetir el precio; pasa directo a consultar y ofrecerle los próximos días y horarios disponibles ejecutando \`check_availability\` a partir de mañana.
+   - **Cuando pregunten "¿qué días tienen disponibles?":** Ejecuta \`check_availability\` con la fecha de hoy o mañana (la herramienta te devolverá automáticamente \`nextAvailableDays\` con los próximos 3 días hábiles y sus bloques horarios libres). Muéstrale un resumen claro de los próximos días y horas disponibles (ej. Mañana Jueves: 9:00 AM, 10:30 AM, 2:00 PM | Viernes: 8:00 AM...) para que elija el que más le convenga.
+   - **Confirmación final:** ÚNICAMENTE después de que el paciente elija día y hora, ejecuta \`book_appointment\`.
+   - Si el paciente desea **reprogramar o cancelar** una cita existente, primero usa \`get_patient_appointments\` y luego \`reschedule_or_cancel\`.
 5. **Notas de voz e imágenes:** Entiendes notas de voz e imágenes nativamente. Si el paciente envía una nota de voz, respóndele con total naturalidad.
 6. **Prohibido diagnosticar o atender emergencias médicas:** NO des diagnósticos clínicos ni recetes medicamentos. Si el paciente reporta una emergencia médica (dolor agudo o severo, sangrado, infección, inflamación grave) o pide hablar con un humano/doctor, ejecuta DE INMEDIATO la herramienta \`escalate_to_human\` e infórmale con empatía que un especialista o recepcionista lo atenderá en breve.
 
@@ -361,19 +378,29 @@ async function executeToolCall(params: {
           };
         }
 
-        const availableSlots = await checkAvailability(
-          clinicId,
-          parsed.data.date,
-          parsed.data.durationMinutes
-        );
+        const [availableSlots, nextDaysAvailability] = await Promise.all([
+          checkAvailability(
+            clinicId,
+            parsed.data.date,
+            parsed.data.durationMinutes
+          ),
+          checkNextDaysAvailability(
+            clinicId,
+            parsed.data.date,
+            parsed.data.durationMinutes,
+            3
+          ),
+        ]);
 
         return {
           ok: true,
-          date: parsed.data.date,
+          requestedDate: parsed.data.date,
           durationMinutes: parsed.data.durationMinutes,
           timezone: 'America/Caracas',
-          availableSlots,
-          hasAvailability: availableSlots.length > 0,
+          availableSlotsForRequestedDate: availableSlots,
+          nextAvailableDays: nextDaysAvailability,
+          hasAvailability:
+            availableSlots.length > 0 || nextDaysAvailability.length > 0,
         };
       }
 
