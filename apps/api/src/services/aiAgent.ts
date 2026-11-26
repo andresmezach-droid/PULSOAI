@@ -26,11 +26,11 @@ import {
 } from './calendar';
 import { downloadWhatsAppMedia, sendWhatsAppText } from './whatsapp';
 
-const GEMINI_MODEL = process.env['GEMINI_MODEL'] || 'gemini-3.5-flash-lite';
+const GEMINI_MODEL = process.env['GEMINI_MODEL'] || 'gemini-3.5-flash';
 const GEMINI_FALLBACK_MODELS = [
   GEMINI_MODEL,
+  'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
-  'gemini-3.5-flash',
 ];
 const MAX_TOOL_ITERATIONS = 5;
 
@@ -127,7 +127,7 @@ const pulsoToolDeclarations: FunctionDeclaration[] = [
   {
     name: 'book_appointment',
     description:
-      'Agenda y confirma una cita nueva en el sistema de la clínica. Requiere el nombre completo del paciente, el UUID del servicio (serviceId obtenido de get_clinic_services) y la fecha/hora de inicio en formato ISO 8601 en hora de Venezuela (ej. 2025-05-20T10:30:00-04:00).',
+      'Agenda y confirma una cita nueva en el sistema de la clínica. REGLA ESTRICTA: PROHIBIDO invocar esta herramienta si en el mensaje actual o reciente el paciente solo mencionó el nombre del servicio sin haber elegido explícitamente el DÍA y la HORA. Antes de invocarla SIEMPRE debes haber ejecutado check_availability en esta conversación y el paciente debe haber confirmado la hora deseada.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -142,7 +142,7 @@ const pulsoToolDeclarations: FunctionDeclaration[] = [
         startTimeIso: {
           type: Type.STRING,
           description:
-            'Fecha y hora exacta de inicio en formato ISO 8601 con zona horaria de Venezuela -04:00 (ej. 2025-05-20T10:30:00-04:00)',
+            'Fecha y hora exacta de inicio confirmada explícitamente por el paciente en formato ISO 8601 con zona horaria de Venezuela -04:00 (ej. 2025-05-20T10:30:00-04:00)',
         },
       },
       required: ['patientName', 'serviceId', 'startTimeIso'],
@@ -274,7 +274,11 @@ ${servicesCatalogStr}
 1. **Tono y longitud:** Mantén un tono cálido, empático, profesional venezolano y muy breve (MÁXIMO 3 a 4 líneas por mensaje). Usa formato claro para WhatsApp.
 2. **Precios y servicios:** Usa ÚNICAMENTE el catálogo oficial pre-cargado arriba (no necesitas llamar a \`get_clinic_services\` a menos que requieras refrescarlo). NUNCA inventes precios ni tratamientos que no estén en la lista.
 3. **Conversión a Bolívares (Tasa BCV):** Cuando el paciente pregunte precios en Bolívares (Bs.), Pago Móvil o transferencia nacional, informa el monto en USD y su equivalente exacto en Bolívares calculado a la tasa oficial del BCV (Bs. ${bcvRate.toFixed(2)}/USD).
-4. **Prohibido inventar disponibilidad:** NUNCA confirmes ni propongas horas específicas sin antes ejecutar \`check_availability\` para la fecha solicitada. Para agendar usa \`book_appointment\` pasando el \`serviceId\` exacto del catálogo. Si el paciente desea **reprogramar o cancelar** una cita existente, primero usa \`get_patient_appointments\` para ubicar su cita activa y luego ejecuta \`reschedule_or_cancel\`.
+4. **Flujo obligatorio de 3 pasos para agendar citas (PROHIBIDO SALTARSE PASOS):**
+   - **Paso A:** Si el paciente solo dice el nombre de un tratamiento (ej. "limpieza", "blanqueamiento"), dale su precio en USD y Bs. BCV y **pregúntale para qué día desea agendar**. NUNCA reutilices fechas ni horas de citas viejas ya agendadas en días anteriores.
+   - **Paso B:** Cuando el paciente indique el día que desea (ej. "mañana", "el viernes"), ejecuta obligatoriamente \`check_availability\` para esa fecha y muéstrale los horarios libres para que elija uno.
+   - **Paso C:** ÚNICAMENTE después de que el paciente confirme explícitamente la hora que prefiere de la lista disponible (y tengas su nombre), ejecuta \`book_appointment\`. Si aún no ha elegido fecha y hora en esta solicitud nueva, está ESTRICTAMENTE PROHIBIDO llamar a \`book_appointment\`.
+   - Si el paciente desea **reprogramar o cancelar** una cita existente, primero usa \`get_patient_appointments\` para ubicar su cita activa y luego ejecuta \`reschedule_or_cancel\`.
 5. **Notas de voz e imágenes:** Entiendes notas de voz e imágenes nativamente. Si el paciente envía una nota de voz, respóndele con total naturalidad.
 6. **Prohibido diagnosticar o atender emergencias médicas:** NO des diagnósticos clínicos ni recetes medicamentos. Si el paciente reporta una emergencia médica (dolor agudo o severo, sangrado, infección, inflamación grave) o pide hablar con un humano/doctor, ejecuta DE INMEDIATO la herramienta \`escalate_to_human\` e infórmale con empatía que un especialista o recepcionista lo atenderá en breve.
 
@@ -290,8 +294,16 @@ async function executeToolCall(params: {
   conversationId: string;
   patientId: string;
   bcvRate: number;
+  checkedAvailabilityInSession: boolean;
 }): Promise<Record<string, unknown>> {
-  const { functionCall, clinicId, conversationId, patientId, bcvRate } = params;
+  const {
+    functionCall,
+    clinicId,
+    conversationId,
+    patientId,
+    bcvRate,
+    checkedAvailabilityInSession,
+  } = params;
   const toolName = functionCall.name ?? 'unknown_tool';
   const rawArgs = (functionCall.args ?? {}) as Record<string, unknown>;
 
@@ -366,6 +378,14 @@ async function executeToolCall(params: {
       }
 
       case 'book_appointment': {
+        if (!checkedAvailabilityInSession) {
+          return {
+            ok: false,
+            error:
+              'BLOQUEADO: El paciente no ha especificado una hora explícita en su último mensaje. Pregúntale primero qué día y hora prefiere (y usa check_availability) antes de invocar book_appointment.',
+          };
+        }
+
         const parsed = bookAppointmentArgsSchema.safeParse(rawArgs);
         if (!parsed.success) {
           return {
@@ -860,16 +880,23 @@ export async function processConversation(
       services: servicesRes.data ?? [],
     });
 
-    // Bucle seguro de Function Calling (máximo 5 iteraciones) con thinkingBudget: 0 para mínima latencia
+    // Verificar si el último mensaje del paciente contiene explícitamente una hora o intención de confirmar hora
+    const latestPatientTexts = chronologicalMessages
+      .filter((m) => m.sender_type === 'patient' && !m.processed_by_ai)
+      .map((m) => m.content)
+      .join(' ');
+    const patientMentionedTimeOrConfirm =
+      /(\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.|hrs|horas)?\b|mañana a las|tarde a las|confirmo|agéndame|agendame|reserva|sí a las|si a las)/i.test(
+        latestPatientTexts
+      );
+
+    // Bucle seguro de Function Calling (máximo 5 iteraciones)
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const response = await generateContentWithFallback({
         contents,
         config: {
           systemInstruction,
           temperature: 0.2,
-          thinkingConfig: {
-            thinkingBudget: 0,
-          },
           tools: [{ functionDeclarations: pulsoToolDeclarations }],
         },
       });
@@ -904,6 +931,7 @@ export async function processConversation(
           conversationId,
           patientId: patient.id,
           bcvRate: bcvRes.rate,
+          checkedAvailabilityInSession: patientMentionedTimeOrConfirm,
         });
 
         const functionResponsePart: Part = {

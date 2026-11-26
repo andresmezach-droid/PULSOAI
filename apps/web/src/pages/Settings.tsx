@@ -40,6 +40,7 @@ export const Settings: React.FC = () => {
     'Pago Móvil (Tasa BCV), Zelle, Efectivo USD, Punto de Venta, Cashea'
   );
   const [systemPromptExtra, setSystemPromptExtra] = useState('');
+  const [whatsappAccessToken, setWhatsappAccessToken] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{
     type: 'success' | 'error';
@@ -92,13 +93,19 @@ export const Settings: React.FC = () => {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
+    const updatePayload: Record<string, unknown> = {
+      business_hours: businessHours,
+      payment_methods: paymentMethodsArray,
+      system_prompt_extra: systemPromptExtra.trim() || null,
+    };
+
+    if (whatsappAccessToken.trim().length > 10) {
+      updatePayload['whatsapp_access_token'] = whatsappAccessToken.trim();
+    }
+
     const { error } = await supabase
       .from('clinics')
-      .update({
-        business_hours: businessHours,
-        payment_methods: paymentMethodsArray,
-        system_prompt_extra: systemPromptExtra.trim() || null,
-      })
+      .update(updatePayload)
       .eq('id', activeClinic.id);
 
     if (error) {
@@ -144,8 +151,21 @@ export const Settings: React.FC = () => {
 
       {/* Formulario Principal */}
       <form onSubmit={handleSaveSettings} className="space-y-6">
-        {/* Tarjeta 1: Métodos de Pago y System Prompt Extra */}
+        {/* Tarjeta 1: Métodos de Pago, Token de WhatsApp y System Prompt Extra */}
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-5">
+          <div>
+            <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#0F172A] mb-2">
+              Token de Acceso de Meta WhatsApp (Opcional: sobrescribe el token del servidor)
+            </label>
+            <input
+              type="password"
+              value={whatsappAccessToken}
+              onChange={(e) => setWhatsappAccessToken(e.target.value)}
+              placeholder="Pega aquí tu nuevo Token de acceso de Meta (EAAg5...) si el anterior caducó"
+              className="w-full px-4 py-2.5 text-sm bg-[#F8FAFC] border border-slate-300 rounded-lg text-[#0F172A] focus:outline-none focus:ring-2 focus:ring-[#06B6D4]"
+            />
+          </div>
+
           <div>
             <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#0F172A] mb-2">
               <CreditCard className="w-4 h-4 text-[#06B6D4]" />
